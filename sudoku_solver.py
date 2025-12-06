@@ -180,6 +180,9 @@ class ArcConsistencySolver:
         self.arcs: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
         self.callback_count = 0
         self.max_callbacks = 50000
+        # Constraints tree representation (built on demand)
+        # Format: {(r,c): {'domain': [...]}}
+        self.constraints_tree: Dict[Tuple[int, int], Dict] = {}
     
     def solve(self, board: List[List[int]], callback: Optional[Callable] = None) -> bool:
         """Solve Sudoku using AC-3 algorithm"""
@@ -263,6 +266,35 @@ class ArcConsistencySolver:
                     neighbors.add((r, c))
         
         return list(neighbors)
+
+    def build_constraints_tree(self, board: List[List[int]]) -> Dict[Tuple[int, int], Dict]:
+        """Build a constraints-tree snapshot for the given board.
+
+        The returned dict maps each cell coordinate (r, c) to a node dict with
+        only the domain. Neighbor lists are omitted because they are static
+        for Sudoku and don't change with the board contents.
+        """
+        # Initialize domains and arcs to reflect the board
+        self._initialize_domains(board)
+        self._define_arcs()
+
+        tree: Dict[Tuple[int, int], Dict] = {}
+        for row in range(GRID_SIZE):
+            for col in range(GRID_SIZE):
+                key = (row, col)
+                domain = self.domains.get(key, []).copy()
+                tree[key] = {'domain': domain}
+
+        self.constraints_tree = tree
+        return tree
+
+    def get_constraints_tree(self) -> Dict[Tuple[int, int], Dict]:
+        """Return the last-built constraints tree (may be empty until built).
+
+        Use `build_constraints_tree(board)` to create/update the tree for a
+        particular board.
+        """
+        return self.constraints_tree
     
     def _revise(self, board: List[List[int]], xi: Tuple[int, int], xj: Tuple[int, int]) -> bool:
         """
@@ -889,6 +921,58 @@ class SudokuPuzzleSolver:
             justify='center'
         )
         self.no_steps_label.pack(pady=50)
+
+        # Constraints Tree panel
+        constraints_panel = tk.LabelFrame(
+            parent,
+            text="🌳 Constraints Tree",
+            font=('Arial', 12, 'bold'),
+            bg=COLOR_BG,
+            fg='#1e293b',
+            bd=2,
+            relief='solid'
+        )
+        constraints_panel.pack(fill='both', expand=True, pady=(10, 0))
+
+        # Buttons row
+        btn_row = tk.Frame(constraints_panel, bg=COLOR_BG)
+        btn_row.pack(fill='x', padx=8, pady=(8, 0))
+
+        tk.Button(
+            btn_row,
+            text="Refresh",
+            command=self.refresh_constraints_tree,
+            bg=COLOR_PRIMARY,
+            fg='white',
+            font=('Arial', 9, 'bold'),
+            relief='flat',
+            cursor='hand2'
+        ).pack(side='left')
+
+        tk.Button(
+            btn_row,
+            text="Export",
+            command=self.export_constraints_tree,
+            bg='#e2e8f0',
+            fg='#1e293b',
+            font=('Arial', 9, 'bold'),
+            relief='flat',
+            cursor='hand2'
+        ).pack(side='left', padx=(8,0))
+
+        # Text view for constraints tree
+        tree_frame = tk.Frame(constraints_panel, bg=COLOR_BG)
+        tree_frame.pack(fill='both', expand=True, padx=8, pady=8)
+
+        self.constraints_text = tk.Text(tree_frame, wrap='none', height=12, bg='#f8fafc')
+        self.constraints_text.pack(side='left', fill='both', expand=True)
+
+        tree_scroll = ttk.Scrollbar(tree_frame, orient='vertical', command=self.constraints_text.yview)
+        tree_scroll.pack(side='right', fill='y')
+        self.constraints_text.configure(yscrollcommand=tree_scroll.set)
+
+        # Initial render
+        self.refresh_constraints_tree()
     
     def set_difficulty(self, difficulty):
         """Set puzzle difficulty"""
@@ -1181,6 +1265,49 @@ class SudokuPuzzleSolver:
                 fg=fg_color,
                 width=2
             ).pack(side='right', padx=10, pady=5)
+
+    def refresh_constraints_tree(self):
+        """Rebuild and render the constraints tree for the current board."""
+        try:
+            ac_solver = ArcConsistencySolver()
+            tree = ac_solver.build_constraints_tree(self.current_board)
+            self.render_constraints_tree(tree)
+        except Exception as e:
+            self.constraints_text.delete('1.0', 'end')
+            self.constraints_text.insert('end', f"Error building constraints tree: {e}")
+
+    def render_constraints_tree(self, tree: Dict[Tuple[int, int], Dict]):
+        """Render a readable representation of the constraints tree into the text widget."""
+        self.constraints_text.config(state='normal')
+        self.constraints_text.delete('1.0', 'end')
+
+        lines = []
+        # Print summary header
+        lines.append(f"Constraints Tree - {len(tree)} nodes")
+        lines.append('')
+
+        # Show each cell domain (omit neighbor info since it's static)
+        for (r, c), node in sorted(tree.items()):
+            domain = node.get('domain', [])
+            # represent domain compactly
+            domain_str = ','.join(map(str, domain)) if domain else '[]'
+            lines.append(f"Cell ({r+1},{c+1}): domain=[{domain_str}]")
+
+        self.constraints_text.insert('end', '\n'.join(lines))
+        self.constraints_text.config(state='disabled')
+
+    def export_constraints_tree(self):
+        """Copy the current constraints tree text to the clipboard for export."""
+        try:
+            text = self.constraints_text.get('1.0', 'end').strip()
+            if not text:
+                messagebox.showinfo("Export", "No constraints to export.")
+                return
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            messagebox.showinfo("Export", "Constraints tree copied to clipboard.")
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e))
 
     def validate_puzzle(self):
         """Validate current puzzle for conflicts and solvability."""
