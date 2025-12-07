@@ -23,22 +23,14 @@ COLOR_PRIMARY = "#0ea5e9"
 
 
 class SudokuSolver:
-    """Base solver class with utility methods"""
-    
     @staticmethod
     def is_valid_placement(board: List[List[int]], row: int, col: int, num: int) -> bool:
-        """Check if placing num at (row, col) is valid"""
-        # Check row
         for c in range(GRID_SIZE):
             if c != col and board[row][c] == num:
                 return False
-        
-        # Check column
         for r in range(GRID_SIZE):
             if r != row and board[r][col] == num:
                 return False
-        
-        # Check 3x3 box
         box_row, box_col = 3 * (row // 3), 3 * (col // 3)
         for r in range(box_row, box_row + 3):
             for c in range(box_col, box_col + 3):
@@ -46,22 +38,17 @@ class SudokuSolver:
                     return False
         
         return True
-    
     @staticmethod
     def get_domain(board: List[List[int]], row: int, col: int) -> List[int]:
-        """Get all valid values for a cell"""
         if board[row][col] != EMPTY_CELL:
             return [board[row][col]]
-        
         domain = []
         for num in range(1, 10):
             if SudokuSolver.is_valid_placement(board, row, col, num):
                 domain.append(num)
         return domain
-    
     @staticmethod
     def solve(board: List[List[int]], algorithm: str, callback: Optional[Callable] = None) -> bool:
-        """Solve the board using the specified algorithm"""
         if algorithm == 'backtracking':
             solver = BacktrackingSolver()
         else:
@@ -70,11 +57,8 @@ class SudokuSolver:
     
     @staticmethod
     def generate_puzzle(difficulty='medium') -> List[List[int]]:
-        """Generate a new Sudoku puzzle"""
-        # Start with solved board
         board = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
         
-        # Fill diagonal 3x3 boxes (these don't conflict with each other)
         for box in range(3):
             nums = list(range(1, 10))
             random.shuffle(nums)
@@ -82,16 +66,11 @@ class SudokuSolver:
                 for j in range(3):
                     board[box * 3 + i][box * 3 + j] = nums[i * 3 + j]
         
-        # Solve the board to get a complete valid solution
         solver = BacktrackingSolver()
         if not solver.solve(board):
-            # If solving fails, try again
             return SudokuSolver.generate_puzzle(difficulty)
-        
-        # Remove cells based on difficulty
         cells_to_remove = {'easy': 35, 'medium': 45, 'hard': 52}.get(difficulty, 45)
-        
-        # Create list of all cells and shuffle
+    
         cells = [(r, c) for r in range(GRID_SIZE) for c in range(GRID_SIZE)]
         random.shuffle(cells)
         
@@ -99,166 +78,106 @@ class SudokuSolver:
         for r, c in cells:
             if removed >= cells_to_remove:
                 break
-            
-            # Save the value
+        
             backup = board[r][c]
             board[r][c] = EMPTY_CELL
-            
-            # Check if puzzle still has unique solution
-            # For simplicity, we just remove the cell
-            # (A full implementation would verify uniqueness)
             removed += 1
         
         return board
 
 
 class BacktrackingSolver:
-    """Simple backtracking algorithm with optimization"""
     
     def __init__(self):
         self.callback_count = 0
-        self.max_callbacks = 50000  # Limit callbacks for UI performance
+        self.max_callbacks = 50000
     
     def solve(self, board: List[List[int]], callback: Optional[Callable] = None) -> bool:
-        """Solve using backtracking algorithm"""
         self.callback_count = 0
         return self._solve_recursive(board, callback)
     
     def validate_solvable(self, board: List[List[int]]) -> bool:
-        """Validate if puzzle is solvable without callbacks (fast validation)"""
         board_copy = [row[:] for row in board]
         return self._solve_recursive(board_copy, callback=None)
     
     def _solve_recursive(self, board: List[List[int]], callback: Optional[Callable] = None) -> bool:
-        """Recursive backtracking solver - tries cells in order"""
-        # Find next empty cell (left to right, top to bottom)
         for row in range(GRID_SIZE):
             for col in range(GRID_SIZE):
                 if board[row][col] == EMPTY_CELL:
-                    # Get valid values for this cell
                     domain = SudokuSolver.get_domain(board, row, col)
                     
-                    # If no valid values, backtrack immediately
                     if len(domain) == 0:
                         return False
                     
-                    # Try each valid value
                     for num in domain:
                         board[row][col] = num
                         
-                        # Call callback for visualization (with limit)
                         if callback and self.callback_count < self.max_callbacks:
                             callback(row, col, num, 'backtracking', domain.copy())
                             self.callback_count += 1
                         
-                        # Recursively try to solve rest of puzzle
                         if self._solve_recursive(board, callback):
                             return True
                         
-                        # This value didn't work, backtrack
                         board[row][col] = EMPTY_CELL
                     
-                    # No value worked for this cell
                     return False
         
-        # No empty cells found - puzzle is solved!
         return True
 
 
 class ArcConsistencySolver:
-    """
-    Arc Consistency (AC-3) algorithm for Sudoku as CSP
-    
-    CSP Representation:
-    - Variables: Each cell in the 9x9 Sudoku grid
-    - Domains: Possible values [1-9] for each empty cell
-    - Constraints: Sudoku rules (no repetition in row/column/3x3 box)
-    """
     
     def __init__(self):
         self.domains: Dict[Tuple[int, int], List[int]] = {}
         self.arcs: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
         self.callback_count = 0
         self.max_callbacks = 50000
-        # Constraints tree representation (built on demand)
-        # Format: {(r,c): {'domain': [...]}}
         self.constraints_tree: Dict[Tuple[int, int], Dict] = {}
     
     def solve(self, board: List[List[int]], callback: Optional[Callable] = None) -> bool:
-        """Solve Sudoku using AC-3 algorithm"""
-        # Step 1: Initialize domains based on initial puzzle
         self._initialize_domains(board)
         
-        # Step 2: Define all arcs (binary constraints)
         self._define_arcs()
         
-        # Step 3: Apply initial arc consistency
         if not self._ac3(board, callback):
             return False
         
-        # Step 4: Update grid with singleton domains
         self._update_grid_from_domains(board, callback)
         
-        # Step 5: If not fully solved, use backtracking with AC-3
         return self._solve_with_ac3(board, callback)
     
     def _initialize_domains(self, board: List[List[int]]):
-        """
-        Initial Domain Reduction:
-        - Pre-filled cells: domain contains only that value
-        - Empty cells: domain is [1, 2, 3, 4, 5, 6, 7, 8, 9]
-        """
         self.domains = {}
         for row in range(GRID_SIZE):
             for col in range(GRID_SIZE):
                 if board[row][col] != EMPTY_CELL:
-                    # Pre-filled cell: singleton domain
                     self.domains[(row, col)] = [board[row][col]]
                 else:
-                    # Empty cell: initialize to [1-9], then reduce
                     self.domains[(row, col)] = list(range(1, 10))
-                    # Remove values that violate constraints
                     self.domains[(row, col)] = SudokuSolver.get_domain(board, row, col)
     
     def _define_arcs(self):
-        """
-        Define Arcs (Binary Constraints):
-        Create arcs between all connected variables:
-        - Row constraints: all pairs in same row
-        - Column constraints: all pairs in same column
-        - Box constraints: all pairs in same 3x3 subgrid
-        """
         self.arcs = []
         
         for row in range(GRID_SIZE):
             for col in range(GRID_SIZE):
                 cell = (row, col)
                 neighbors = self._get_neighbors(row, col)
-                
-                # Create arc from this cell to each neighbor
                 for neighbor in neighbors:
                     self.arcs.append((cell, neighbor))
     
     def _get_neighbors(self, row: int, col: int) -> List[Tuple[int, int]]:
-        """
-        Get all neighboring cells that share a constraint:
-        - Same row
-        - Same column  
-        - Same 3x3 subgrid
-        """
         neighbors = set()
         
-        # Row constraint: all cells in same row
         for c in range(GRID_SIZE):
             if c != col:
                 neighbors.add((row, c))
         
-        # Column constraint: all cells in same column
         for r in range(GRID_SIZE):
             if r != row:
                 neighbors.add((r, col))
         
-        # Box constraint: all cells in same 3x3 subgrid
         box_row, box_col = 3 * (row // 3), 3 * (col // 3)
         for r in range(box_row, box_row + 3):
             for c in range(box_col, box_col + 3):
@@ -268,13 +187,6 @@ class ArcConsistencySolver:
         return list(neighbors)
 
     def build_constraints_tree(self, board: List[List[int]]) -> Dict[Tuple[int, int], Dict]:
-        """Build a constraints-tree snapshot for the given board.
-
-        The returned dict maps each cell coordinate (r, c) to a node dict with
-        only the domain. Neighbor lists are omitted because they are static
-        for Sudoku and don't change with the board contents.
-        """
-        # Initialize domains and arcs to reflect the board
         self._initialize_domains(board)
         self._define_arcs()
 
@@ -289,91 +201,48 @@ class ArcConsistencySolver:
         return tree
 
     def get_constraints_tree(self) -> Dict[Tuple[int, int], Dict]:
-        """Return the last-built constraints tree (may be empty until built).
-
-        Use `build_constraints_tree(board)` to create/update the tree for a
-        particular board.
-        """
         return self.constraints_tree
     
     def _revise(self, board: List[List[int]], xi: Tuple[int, int], xj: Tuple[int, int]) -> bool:
-        """
-        Revise: For arc (Xi, Xj), remove inconsistent values from Xi's domain
-        
-        For each value in domain of Xi:
-        - Check if there exists a consistent value in domain of Xj
-        - If no consistent value exists, remove it from Xi's domain
-        """
         revised = False
         values_to_remove = []
         
         for value_i in self.domains[xi]:
-            # Check if this value in Xi is consistent with Xj
             consistent = False
             
             if len(self.domains[xj]) == 1:
-                # Xj has singleton domain
                 value_j = self.domains[xj][0]
-                # Value is consistent if it's different from Xj's value
                 if value_i != value_j:
                     consistent = True
             else:
-                # Xj has multiple values - any value in Xi is potentially consistent
                 consistent = True
-            
-            # If no consistent value found, mark for removal
+
             if not consistent:
                 values_to_remove.append(value_i)
                 revised = True
         
-        # Remove inconsistent values
         for value in values_to_remove:
             self.domains[xi].remove(value)
         
         return revised
     
     def _ac3(self, board: List[List[int]], callback: Optional[Callable] = None) -> bool:
-        """
-        Apply Arc Consistency (AC-3):
-        Iteratively enforce arc consistency on all arcs until no further changes
-        
-        Algorithm:
-        1. Initialize queue with all arcs
-        2. While queue not empty:
-           - Remove arc (Xi, Xj) from queue
-           - If Revise(Xi, Xj) makes changes:
-             - If Xi's domain is empty: return failure
-             - Add all arcs (Xk, Xi) to queue (where Xk is neighbor of Xi)
-        """
-        # Initialize queue with all arcs
         queue = list(self.arcs)
-        
+    
         while queue:
             xi, xj = queue.pop(0)
             
-            # Revise: Remove inconsistent values from Xi
             if self._revise(board, xi, xj):
-                # Domain reduction occurred
-                
-                # Check for failure: empty domain means no solution
                 if len(self.domains[xi]) == 0:
                     return False
-                
-                # Add all arcs (Xk, Xi) back to queue
-                # (neighbors of Xi need to be re-checked)
                 neighbors = self._get_neighbors(xi[0], xi[1])
                 for xk in neighbors:
-                    if xk != xj:  # Don't add the arc we just processed
+                    if xk != xj:
                         queue.append((xk, xi))
         
         return True
     
     def _update_grid_from_domains(self, board: List[List[int]], callback: Optional[Callable] = None):
-        """
-        Update Sudoku Grid:
-        For cells with singleton domains (only one possible value),
-        assign that value to the cell
-        """
         updated = True
         while updated:
             updated = False
@@ -389,21 +258,10 @@ class ArcConsistencySolver:
                             self.callback_count += 1
     
     def _solve_with_ac3(self, board: List[List[int]], callback: Optional[Callable] = None) -> bool:
-        """
-        Solve using backtracking with AC-3 constraint propagation
-        
-        If arc consistency alone doesn't solve the puzzle:
-        1. Choose variable with smallest domain (MRV heuristic)
-        2. Try each value in its domain
-        3. Apply AC-3 after each assignment
-        4. Backtrack if AC-3 fails
-        """
-        # Check if puzzle is completely solved
         all_filled = all(board[r][c] != EMPTY_CELL for r in range(GRID_SIZE) for c in range(GRID_SIZE))
         if all_filled:
             return True
         
-        # Find cell with smallest domain (MRV - Minimum Remaining Values heuristic)
         min_domain_size = float('inf')
         best_cell = None
         
@@ -421,12 +279,10 @@ class ArcConsistencySolver:
         row, col = best_cell
         domain = self.domains[(row, col)].copy()
         
-        # Try each value in domain
         for num in domain:
             if SudokuSolver.is_valid_placement(board, row, col, num):
                 board[row][col] = num
                 
-                # Save current domains for backtracking
                 old_domains = {k: v.copy() for k, v in self.domains.items()}
                 self.domains[(row, col)] = [num]
                 
@@ -434,16 +290,11 @@ class ArcConsistencySolver:
                     callback(row, col, num, 'arc-consistency', domain.copy())
                     self.callback_count += 1
                 
-                # Apply AC-3 after assignment
                 if self._ac3(board, callback):
-                    # Update grid with any new singleton domains
                     self._update_grid_from_domains(board, callback)
                     
-                    # Continue solving recursively
                     if self._solve_with_ac3(board, callback):
                         return True
-                
-                # Backtrack: restore board and domains
                 board[row][col] = EMPTY_CELL
                 self.domains = old_domains
         
@@ -451,7 +302,6 @@ class ArcConsistencySolver:
 
 
 class SudokuCell(tk.Frame):
-    """Individual Sudoku cell widget"""
     
     def __init__(self, parent, row, col, value, is_editable, on_change, on_click):
         super().__init__(parent, bg=COLOR_GRID_LINE)
@@ -460,16 +310,19 @@ class SudokuCell(tk.Frame):
         self.is_editable = is_editable
         self.on_change = on_change
         self.on_click = on_click
+        self._suppress_var = False
+        self._last_value = value
         
-        # Border thickness
         border_right = 3 if (col + 1) % 3 == 0 and col != 8 else 1
         border_bottom = 3 if (row + 1) % 3 == 0 and row != 8 else 1
         
         self.config(highlightthickness=0, bd=0)
         self.grid(padx=(0, border_right - 1), pady=(0, border_bottom - 1))
         
+        self.var = tk.StringVar()
         self.entry = tk.Entry(
             self,
+            textvariable=self.var,
             width=2,
             font=('Arial', 20, 'bold'),
             justify='center',
@@ -480,16 +333,17 @@ class SudokuCell(tk.Frame):
             highlightbackground=COLOR_GRID_LINE
         )
         self.entry.pack(fill='both', expand=True)
-        
-        self.set_value(value)
-        self.set_state('initial' if value != 0 else 'user')
-        
+
+        self._trace_name = None
         if is_editable:
-            self.entry.bind('<KeyPress>', self._on_key)
+            self._trace_name = self.var.trace_add('write', self._on_var_change)
             self.entry.bind('<Button-1>', lambda e: on_click(row, col))
             self.entry.config(cursor='hand2')
         else:
             self.entry.config(state='readonly', cursor='arrow')
+
+        self.set_value(value)
+        self.set_state('initial' if value != 0 else 'user')
     
     def _on_key(self, event):
         if not self.is_editable:
@@ -502,14 +356,60 @@ class SudokuCell(tk.Frame):
             self.on_change(self.row, self.col, 0)
             return 'break'
         return 'break'
+
+    def _on_var_change(self, *args):
+        """Handle changes to the Entry's StringVar, validating and notifying parent."""
+        if self._suppress_var:
+            return
+
+        s = self.var.get()
+
+        if s == '':
+            value = 0
+        elif len(s) == 1 and s in '123456789':
+            value = int(s)
+        else:
+            self._suppress_var = True
+            if self._last_value == 0:
+                self.var.set('')
+            else:
+                self.var.set(str(self._last_value))
+            self._suppress_var = False
+            return
+
+        self._last_value = value
+        self.on_change(self.row, self.col, value)
     
     def set_value(self, value):
-        self.entry.config(state='normal')
-        self.entry.delete(0, 'end')
-        if value != 0:
-            self.entry.insert(0, str(value))
+        self._suppress_var = True
+        if value == 0:
+            self.var.set('')
+        else:
+            self.var.set(str(value))
+        self._last_value = value
+        self._suppress_var = False
         if not self.is_editable:
             self.entry.config(state='readonly')
+        else:
+            self.entry.config(state='normal')
+
+    def set_editable(self, is_editable):
+        """Enable or disable editing for this cell, updating trace and state."""
+        if is_editable == self.is_editable:
+            return
+        self.is_editable = is_editable
+        if is_editable:
+            if not self._trace_name:
+                self._trace_name = self.var.trace_add('write', self._on_var_change)
+            self.entry.config(state='normal', cursor='hand2')
+        else:
+            if self._trace_name:
+                try:
+                    self.var.trace_remove('write', self._trace_name)
+                except Exception:
+                    pass
+                self._trace_name = None
+            self.entry.config(state='readonly', cursor='arrow')
     
     def set_state(self, state):
         colors = {
@@ -538,8 +438,7 @@ class SudokuPuzzleSolver:
         self.root.geometry("1400x800")
         self.root.configure(bg=COLOR_BG)
         
-        # State variables
-        self.mode = 'auto-solve'
+        self.mode = 'puzzle'
         self.algorithm = 'backtracking'
         self.difficulty = 'medium'
         self.initial_board = SudokuSolver.generate_puzzle(self.difficulty)
@@ -555,7 +454,6 @@ class SudokuPuzzleSolver:
         self.current_step = 0
         self.start_time = 0
         
-        # Comparison data
         self.comparison_data = {
             'easy': {'backtracking': [], 'arc-consistency': []},
             'medium': {'backtracking': [], 'arc-consistency': []},
@@ -566,11 +464,9 @@ class SudokuPuzzleSolver:
     
     def setup_ui(self):
         """Setup the main UI"""
-        # Main container
         main_frame = tk.Frame(self.root, bg=COLOR_BG)
         main_frame.pack(fill='both', expand=True, padx=20, pady=20)
         
-        # Title
         title_frame = tk.Frame(main_frame, bg=COLOR_BG)
         title_frame.pack(fill='x', pady=(0, 20))
         
@@ -590,15 +486,12 @@ class SudokuPuzzleSolver:
             fg='#64748b'
         ).pack()
         
-        # Content area
         content_frame = tk.Frame(main_frame, bg=COLOR_BG)
         content_frame.pack(fill='both', expand=True)
         
-        # Left panel - Grid and controls
         left_panel = tk.Frame(content_frame, bg=COLOR_BG)
         left_panel.pack(side='left', fill='both', expand=False, padx=(0, 20))
         
-        # Sudoku Grid
         self.grid_frame = tk.Frame(left_panel, bg=COLOR_GRID_THICK, bd=3, relief='solid')
         self.grid_frame.pack(pady=(0, 20))
         
@@ -618,17 +511,14 @@ class SudokuPuzzleSolver:
                 cell_row.append(cell)
             self.cells.append(cell_row)
         
-        # Control Panel
         self.setup_control_panel(left_panel)
         
-        # Middle panel - Progress
         middle_panel = tk.Frame(content_frame, bg=COLOR_BG, width=350)
         middle_panel.pack(side='left', fill='both', padx=(0, 20))
         middle_panel.pack_propagate(False)
         
         self.setup_progress_panel(middle_panel)
         
-        # Right panel - Steps viewer
         right_panel = tk.Frame(content_frame, bg=COLOR_BG, width=300)
         right_panel.pack(side='left', fill='both', expand=True)
         
@@ -648,8 +538,29 @@ class SudokuPuzzleSolver:
             pady=15
         )
         panel.pack(fill='x')
+
+        mode_frame = tk.Frame(panel, bg=COLOR_BG)
+        mode_frame.pack(fill='x', pady=(0, 10))
+        tk.Label(mode_frame, text="Mode", font=('Arial', 10, 'bold'), bg=COLOR_BG).pack(anchor='w')
+        modes_buttons = tk.Frame(mode_frame, bg=COLOR_BG)
+        modes_buttons.pack(fill='x', pady=(5, 0))
+
+        def _style_mode(btn, active=False):
+            if active:
+                btn.config(bg=COLOR_PRIMARY, fg='white')
+            else:
+                btn.config(bg='#e2e8f0', fg='#1e293b')
+            btn.config(font=('Arial', 9, 'bold'), relief='flat', bd=0, padx=8, pady=6, cursor='hand2')
+
+        self.mode_puzzle_btn = tk.Button(modes_buttons, text='🎲 Generated', command=lambda: self.set_mode('puzzle'))
+        _style_mode(self.mode_puzzle_btn, active=(self.mode == 'puzzle'))
+        self.mode_puzzle_btn.pack(side='left')
+
+        self.mode_user_btn = tk.Button(modes_buttons, text='✍️ User Input', command=lambda: self.set_mode('user-input'))
+        _style_mode(self.mode_user_btn, active=(self.mode == 'user-input'))
+        self.mode_user_btn.pack(side='left', padx=(8, 0))
+
         
-        # Difficulty selection
         difficulty_frame = tk.Frame(panel, bg=COLOR_BG)
         difficulty_frame.pack(fill='x', pady=(0, 10))
         
@@ -693,7 +604,6 @@ class SudokuPuzzleSolver:
         )
         self.hard_btn.pack(side='left', fill='x', expand=True)
         
-        # Algorithm
         algo_frame = tk.Frame(panel, bg=COLOR_BG)
         algo_frame.pack(fill='x', pady=(0, 10))
         
@@ -725,7 +635,6 @@ class SudokuPuzzleSolver:
         )
         self.arc_btn.pack(side='left', fill='x', expand=True)
         
-        # Action buttons
         action_frame = tk.Frame(panel, bg=COLOR_BG)
         action_frame.pack(fill='x')
         
@@ -793,7 +702,6 @@ class SudokuPuzzleSolver:
         )
         panel.pack(fill='both', expand=True)
         
-        # Timer
         self.timer_label = tk.Label(
             panel,
             text="⏱ 0:00",
@@ -803,7 +711,6 @@ class SudokuPuzzleSolver:
         )
         self.timer_label.pack(anchor='e')
         
-        # Progress bar
         progress_frame = tk.Frame(panel, bg=COLOR_BG)
         progress_frame.pack(fill='x', pady=(10, 0))
         
@@ -824,7 +731,6 @@ class SudokuPuzzleSolver:
         )
         self.progress_bar.pack(fill='x', pady=(5, 0))
         
-        # Stats
         stats_frame = tk.Frame(panel, bg=COLOR_BG)
         stats_frame.pack(fill='x', pady=(15, 0))
         
@@ -883,7 +789,6 @@ class SudokuPuzzleSolver:
         )
         panel.pack(fill='both', expand=True)
         
-        # Steps count badge
         self.steps_badge = tk.Label(
             panel,
             text="0 steps",
@@ -895,7 +800,6 @@ class SudokuPuzzleSolver:
         )
         self.steps_badge.place(relx=1.0, x=-10, y=5, anchor='ne')
         
-        # Scrollable frame
         canvas = tk.Canvas(panel, bg=COLOR_BG, highlightthickness=0)
         scrollbar = ttk.Scrollbar(panel, orient='vertical', command=canvas.yview)
         self.steps_frame = tk.Frame(canvas, bg=COLOR_BG)
@@ -910,8 +814,7 @@ class SudokuPuzzleSolver:
         
         canvas.pack(side='left', fill='both', expand=True, padx=10, pady=10)
         scrollbar.pack(side='right', fill='y')
-        
-        # Initial message
+    
         self.no_steps_label = tk.Label(
             self.steps_frame,
             text="📋\n\nNo steps yet\nStart solving to see the steps",
@@ -922,7 +825,6 @@ class SudokuPuzzleSolver:
         )
         self.no_steps_label.pack(pady=50)
 
-        # Constraints Tree panel
         constraints_panel = tk.LabelFrame(
             parent,
             text="🌳 Constraints Tree",
@@ -934,7 +836,6 @@ class SudokuPuzzleSolver:
         )
         constraints_panel.pack(fill='both', expand=True, pady=(10, 0))
 
-        # Buttons row
         btn_row = tk.Frame(constraints_panel, bg=COLOR_BG)
         btn_row.pack(fill='x', padx=8, pady=(8, 0))
 
@@ -960,7 +861,6 @@ class SudokuPuzzleSolver:
             cursor='hand2'
         ).pack(side='left', padx=(8,0))
 
-        # Text view for constraints tree
         tree_frame = tk.Frame(constraints_panel, bg=COLOR_BG)
         tree_frame.pack(fill='both', expand=True, padx=8, pady=8)
 
@@ -971,14 +871,12 @@ class SudokuPuzzleSolver:
         tree_scroll.pack(side='right', fill='y')
         self.constraints_text.configure(yscrollcommand=tree_scroll.set)
 
-        # Initial render
         self.refresh_constraints_tree()
     
     def set_difficulty(self, difficulty):
         """Set puzzle difficulty"""
         self.difficulty = difficulty
         
-        # Update button colors
         buttons = {
             'easy': self.easy_btn,
             'medium': self.medium_btn,
@@ -1000,12 +898,48 @@ class SudokuPuzzleSolver:
         else:
             self.arc_btn.config(bg=COLOR_PRIMARY, fg='white')
             self.backtrack_btn.config(bg='#e2e8f0', fg='#1e293b')
+
+    def set_mode(self, mode: str):
+        """Switch between 'puzzle' (generated) and 'user-input' (empty board).
+
+        Updates `initial_board`, `current_board`, and `editable_board`, then refreshes UI.
+        """
+        if mode == self.mode:
+            return
+        self.mode = mode
+        if mode == 'user-input':
+            self.initial_board = [[EMPTY_CELL for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+            self.current_board = [row[:] for row in self.initial_board]
+            self.editable_board = [[True for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        else:
+            self.initial_board = SudokuSolver.generate_puzzle(self.difficulty)
+            self.current_board = [row[:] for row in self.initial_board]
+            self.editable_board = [[cell == EMPTY_CELL for cell in row] for row in self.initial_board]
+
+        self.reset_state()
+        self.refresh_grid()
+        try:
+            if hasattr(self, 'mode_puzzle_btn') and hasattr(self, 'mode_user_btn'):
+                if self.mode == 'puzzle':
+                    self.mode_puzzle_btn.config(bg=COLOR_PRIMARY, fg='white')
+                    self.mode_user_btn.config(bg='#e2e8f0', fg='#1e293b')
+                else:
+                    self.mode_user_btn.config(bg=COLOR_PRIMARY, fg='white')
+                    self.mode_puzzle_btn.config(bg='#e2e8f0', fg='#1e293b')
+        except Exception:
+            pass
+        
     
     def new_puzzle(self):
         """Generate a new puzzle"""
-        self.initial_board = SudokuSolver.generate_puzzle(self.difficulty)
+        if self.mode == 'user-input':
+            self.initial_board = [[EMPTY_CELL for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+            self.editable_board = [[True for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        else:
+            self.initial_board = SudokuSolver.generate_puzzle(self.difficulty)
+            self.editable_board = [[cell == EMPTY_CELL for cell in row] for row in self.initial_board]
+
         self.current_board = [row[:] for row in self.initial_board]
-        self.editable_board = [[cell == EMPTY_CELL for cell in row] for row in self.initial_board]
         self.reset_state()
         self.refresh_grid()
     
@@ -1034,7 +968,7 @@ class SudokuPuzzleSolver:
                 self.cells[row][col].set_value(self.current_board[row][col])
                 state = 'initial' if self.current_board[row][col] != 0 and not self.editable_board[row][col] else 'user'
                 self.cells[row][col].set_state(state)
-                self.cells[row][col].is_editable = self.editable_board[row][col]
+                self.cells[row][col].set_editable(self.editable_board[row][col])
     
     def on_cell_change(self, row, col, value):
         """Handle cell value change"""
@@ -1043,7 +977,6 @@ class SudokuPuzzleSolver:
         
         self.current_board[row][col] = value
         
-        # Check if the placement is valid
         if value != 0 and not SudokuSolver.is_valid_placement(self.current_board, row, col, value):
             self.cells[row][col].set_state('error')
             self.root.after(500, lambda: self.cells[row][col].set_state('user'))
@@ -1072,7 +1005,6 @@ class SudokuPuzzleSolver:
             self.solve_btn.config(text="⏸ Pause" if not self.is_paused else "▶ Resume")
             return
         
-        # First, validate the puzzle is solvable using backtracking
         self.solve_btn.config(text="🔍 Validating...", state='disabled')
         self.root.update()
         
@@ -1084,11 +1016,9 @@ class SudokuPuzzleSolver:
             self.solve_btn.config(text="▶ Start Solving", state='normal', bg='#10b981')
             return
         
-        # Show solving indicator
         self.solve_btn.config(text="⏳ Processing...", state='disabled')
         self.root.update()
         
-        # Collect solving steps with selected algorithm
         board_copy = [row[:] for row in self.current_board]
         self.solving_steps = []
         
@@ -1175,8 +1105,6 @@ class SudokuPuzzleSolver:
             self.root.after(100, self.update_timer)
     
     def update_steps_viewer(self):
-        """Update the steps viewer"""
-        # Clear existing steps
         for widget in self.steps_frame.winfo_children():
             widget.destroy()
         
@@ -1194,7 +1122,6 @@ class SudokuPuzzleSolver:
             self.no_steps_label.pack(pady=50)
             return
         
-        # Only show last 50 steps for performance
         steps_to_show = self.solving_steps[-50:] if len(self.solving_steps) > 50 else self.solving_steps
         start_index = len(self.solving_steps) - len(steps_to_show)
         
@@ -1209,7 +1136,6 @@ class SudokuPuzzleSolver:
             step_frame = tk.Frame(self.steps_frame, bg=bg_color, relief='solid', bd=2 if is_current else 1)
             step_frame.pack(fill='x', pady=2, padx=5)
             
-            # Step number - with minimum width to ensure visibility
             step_num_label = tk.Label(
                 step_frame,
                 text=str(i + 1),
@@ -1221,7 +1147,6 @@ class SudokuPuzzleSolver:
             )
             step_num_label.pack(side='left', padx=5, pady=5)
             
-            # Cell info
             info_frame = tk.Frame(step_frame, bg=bg_color)
             info_frame.pack(side='left', fill='x', expand=True, padx=5)
             
@@ -1233,7 +1158,6 @@ class SudokuPuzzleSolver:
                 fg=fg_color
             ).pack(anchor='w')
             
-            # Domain display
             domain_str = ', '.join(map(str, domain))
             tk.Label(
                 info_frame,
@@ -1243,7 +1167,6 @@ class SudokuPuzzleSolver:
                 fg=fg_color
             ).pack(anchor='w')
             
-            # Algorithm badge
             algo_text = "BT" if method == 'backtracking' else "AC3"
             algo_color = '#8b5cf6' if method == 'arc-consistency' else '#3b82f6'
             tk.Label(
@@ -1256,7 +1179,6 @@ class SudokuPuzzleSolver:
                 pady=1
             ).pack(anchor='w', pady=(2, 0))
             
-            # Value display
             tk.Label(
                 step_frame,
                 text=str(value),
@@ -1282,14 +1204,11 @@ class SudokuPuzzleSolver:
         self.constraints_text.delete('1.0', 'end')
 
         lines = []
-        # Print summary header
         lines.append(f"Constraints Tree - {len(tree)} nodes")
         lines.append('')
 
-        # Show each cell domain (omit neighbor info since it's static)
         for (r, c), node in sorted(tree.items()):
             domain = node.get('domain', [])
-            # represent domain compactly
             domain_str = ','.join(map(str, domain)) if domain else '[]'
             lines.append(f"Cell ({r+1},{c+1}): domain=[{domain_str}]")
 
@@ -1311,7 +1230,6 @@ class SudokuPuzzleSolver:
 
     def validate_puzzle(self):
         """Validate current puzzle for conflicts and solvability."""
-        # Find immediate conflicts (duplicate values in row/col/box)
         conflicts = []
         for row in range(GRID_SIZE):
             for col in range(GRID_SIZE):
@@ -1320,7 +1238,6 @@ class SudokuPuzzleSolver:
                     conflicts.append((row, col))
 
         if conflicts:
-            # Highlight conflicts briefly
             for (r, c) in conflicts:
                 self.cells[r][c].set_state('error')
 
@@ -1333,7 +1250,6 @@ class SudokuPuzzleSolver:
             messagebox.showerror("Invalid Puzzle", f"Found {len(conflicts)} conflicting cell(s). Please fix them before solving.")
             return
 
-        # Quick solvability check using backtracking validator
         validator = BacktrackingSolver()
         board_copy = [row[:] for row in self.current_board]
         solvable = validator.validate_solvable(board_copy)
